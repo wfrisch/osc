@@ -3321,10 +3321,10 @@ def makeurl(baseurl, l, query=[]):
 
 
 pool_manager = urllib3.poolmanager.PoolManager(num_pools=5, ca_certs="/var/lib/ca-certificates/ca-bundle.pem", cert_reqs="REQUIRED")
-if conf.config['debug']:
-    import logging
-    logging.getLogger("urllib3").setLevel(logging.DEBUG)
-    logging.basicConfig(level=logging.DEBUG)
+#if conf.config['debug']:
+    #import logging
+    #logging.getLogger("urllib3").setLevel(logging.DEBUG)
+    #logging.basicConfig(level=logging.DEBUG)
 
 def http_request(method, url, headers={}, data=None, file=None):
     def create_memoryview(obj):
