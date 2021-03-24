@@ -5,7 +5,7 @@
 
 from __future__ import print_function
 
-__version__ = '0.169.0.git'
+__version__ = '0.173.git'
 
 # __store_version__ is to be incremented when the format of the working copy
 # "store" changes in an incompatible way. Please add any needed migration
@@ -51,11 +51,13 @@ except ImportError:
     from cStringIO import StringIO
     from httplib import IncompleteRead
 
-
 try:
+    # Works up to Python 3.8, needed for Python < 3.3 (inc 2.7)
     from xml.etree import cElementTree as ET
 except ImportError:
-    import cElementTree as ET
+    # will import a fast implementation from 3.3 onwards, needed
+    # for 3.9+
+    from xml.etree import ElementTree as ET
 
 from . import oscerr
 from . import conf
@@ -412,22 +414,36 @@ class Serviceinfo:
         return r
 
     def execute(self, dir, callmode = None, singleservice = None, verbose = None):
+        old_dir = os.path.join(dir, '.old')
+        if os.path.exists(old_dir) or os.path.islink(old_dir):
+            msg = '"%s" exists, please remove it' % old_dir
+            raise oscerr.OscIOError(None, msg)
+        try:
+            os.mkdir(old_dir)
+            return self._execute(dir, old_dir, callmode, singleservice,
+                                 verbose)
+        finally:
+            if os.path.exists(old_dir):
+                shutil.rmtree(old_dir)
+
+    def _execute(self, dir, old_dir, callmode=None, singleservice=None,
+                 verbose=None):
         import tempfile
 
         # cleanup existing generated files
         for filename in os.listdir(dir):
             if filename.startswith('_service:') or filename.startswith('_service_'):
-                ent = os.path.join(dir, filename)
-                if os.path.isdir(ent):
-                    shutil.rmtree(ent)
-                else:
-                    os.unlink(ent)
+                os.rename(os.path.join(dir, filename),
+                          os.path.join(old_dir, filename))
 
         allservices = self.services or []
-        if singleservice and not singleservice in allservices:
+        service_names = [s['name'] for s in allservices]
+        if singleservice and singleservice not in service_names:
             # set array to the manual specified singleservice, if it is not part of _service file
-            data = { 'name' : singleservice, 'command' : [ singleservice ], 'mode' : '' }
+            data = { 'name' : singleservice, 'command' : [ singleservice ], 'mode' : callmode }
             allservices = [data]
+        elif singleservice:
+            allservices = [s for s in allservices if s['name'] == singleservice]
 
         if not allservices:
             # short-circuit to avoid a potential http request in vc_export_env
@@ -451,11 +467,13 @@ class Serviceinfo:
         ret = 0
         for service in allservices:
             if callmode != "all":
-                if singleservice and service['name'] != singleservice:
-                    continue
                 if service['mode'] == "buildtime":
                     continue
-                if service['mode'] == "serveronly" and callmode != "disabled":
+                if service['mode'] == "serveronly" and callmode != "local":
+                    continue
+                if service['mode'] == "manual" and callmode != "manual":
+                    continue
+                if service['mode'] != "manual" and callmode == "manual":
                     continue
                 if service['mode'] == "disabled" and callmode != "disabled":
                     continue
@@ -481,7 +499,7 @@ class Serviceinfo:
                     #        updating _services.
                     return r
 
-                if service['mode'] == "disabled" or service['mode'] == "trylocal" or service['mode'] == "localonly" or callmode == "local" or callmode == "trylocal" or callmode == "all":
+                if service['mode'] == "manual" or service['mode'] == "disabled" or service['mode'] == "trylocal" or service['mode'] == "localonly" or callmode == "local" or callmode == "trylocal" or callmode == "all":
                     for filename in os.listdir(temp_dir):
                         os.rename(os.path.join(temp_dir, filename), os.path.join(dir, filename))
                 else:
@@ -820,7 +838,7 @@ class Project:
 
     def read_packages(self):
         """
-        Returns an ``xml.etree.cElementTree`` object representing the
+        Returns an ``xml.etree.ElementTree`` object representing the
         parsed contents of the project's ``.osc/_packages`` XML file.
         """
         global store
@@ -2673,6 +2691,9 @@ class Action:
         'maintenance_release': ('src_project', 'src_package', 'src_rev', 'tgt_project', 'tgt_package', 'person_name',
                             'acceptinfo_rev', 'acceptinfo_srcmd5', 'acceptinfo_xsrcmd5', 'acceptinfo_osrcmd5',
                             'acceptinfo_oxsrcmd5', 'acceptinfo_oproject', 'acceptinfo_opackage'),
+        'release': ('src_project', 'src_package', 'src_rev', 'tgt_project', 'tgt_package', 'person_name',
+                            'acceptinfo_rev', 'acceptinfo_srcmd5', 'acceptinfo_xsrcmd5', 'acceptinfo_osrcmd5',
+                            'acceptinfo_oxsrcmd5', 'acceptinfo_oproject', 'acceptinfo_opackage', 'tgt_repository'),
         'maintenance_incident': ('src_project', 'src_package', 'src_rev', 'tgt_project', 'tgt_package', 'tgt_releaseproject', 'person_name', 'opt_sourceupdate', 'opt_makeoriginolder',
                             'acceptinfo_rev', 'acceptinfo_srcmd5', 'acceptinfo_xsrcmd5', 'acceptinfo_osrcmd5',
                             'acceptinfo_oxsrcmd5'),
@@ -2932,7 +2953,7 @@ class Request:
             srcupdate = ' '
             if action.opt_sourceupdate and show_srcupdate:
                 srcupdate = '(%s)' % action.opt_sourceupdate
-        elif action.type == 'maintenance_release':
+        elif action.type in ('maintenance_release', 'release'):
             d['source'] = '%s' % prj_pkg_join(action.src_project, action.src_package)
             if action.src_rev:
                 d['source'] = d['source'] + '@%s' % action.src_rev
@@ -4187,7 +4208,7 @@ def create_release_request(apiurl, src_project, message=''):
     # api will complete the request
     r.add_action('maintenance_release', src_project=src_project)
     # XXX: clarify why we need the unicode(...) stuff
-    r.description = _html_escape(unicode(message, 'utf8'))
+    r.description = unicode(message, 'utf8')
     r.create(apiurl)
     return r
 
@@ -4200,7 +4221,7 @@ def create_maintenance_request(apiurl, src_project, src_packages, tgt_project, t
     else:
         r.add_action('maintenance_incident', src_project=src_project, tgt_project=tgt_project, tgt_releaseproject=tgt_releaseproject, opt_sourceupdate = opt_sourceupdate)
     # XXX: clarify why we need the unicode(...) stuff
-    r.description = _html_escape(unicode(message, 'utf8'))
+    r.description = unicode(message, 'utf8')
     r.create(apiurl, addrevision=True, enforce_branching=enforce_branching)
     return r
 
@@ -4826,7 +4847,7 @@ def get_source_file_diff(dir, filename, rev, oldfilename = None, olddir = None, 
 def server_diff(apiurl,
                 old_project, old_package, old_revision,
                 new_project, new_package, new_revision,
-                unified=False, missingok=False, meta=False, expand=True, onlyissues=False, full=True):
+                unified=False, missingok=False, meta=False, expand=True, onlyissues=False, full=True, xml=False):
     query = {'cmd': 'diff'}
     if expand:
         query['expand'] = 1
@@ -4854,24 +4875,34 @@ def server_diff(apiurl,
 
     u = makeurl(apiurl, ['source', new_project, new_package], query=query)
     f = http_POST(u)
-    if onlyissues:
-        issue_list = []
+    if onlyissues and not xml:
+        del_issue_list = []
+        add_issue_list = []
+        chn_issue_list = []
         root = ET.fromstring(f.read())
         node = root.find('issues')
         for issuenode in node.findall('issue'):
-            issue_list.append(issuenode.get('label'))
-        return '\n'.join(issue_list)
+            if issuenode.get('state') == 'deleted':
+                del_issue_list.append(issuenode.get('label'))
+            elif issuenode.get('state') == 'added':
+                add_issue_list.append(issuenode.get('label'))
+            else:
+                chn_issue_list.append(issuenode.get('label'))
+        string = 'added:\n----------\n' + '\n'.join(add_issue_list) + \
+            '\n\nchanged:\n----------\n' + '\n'.join(chn_issue_list) + \
+            '\n\ndeleted:\n----------\n' + '\n'.join(del_issue_list)
+        return string
     return f.read()
 
 def server_diff_noex(apiurl,
                 old_project, old_package, old_revision,
                 new_project, new_package, new_revision,
-                unified=False, missingok=False, meta=False, expand=True, onlyissues=False):
+                unified=False, missingok=False, meta=False, expand=True, onlyissues=False, xml=False):
     try:
         return server_diff(apiurl,
                             old_project, old_package, old_revision,
                             new_project, new_package, new_revision,
-                            unified, missingok, meta, expand, onlyissues)
+                            unified, missingok, meta, expand, onlyissues, True, xml)
     except HTTPError as e:
         msg = None
         body = None
@@ -5660,9 +5691,12 @@ def get_repos_of_project(apiurl, prj):
         for node2 in node.findall('arch'):
             yield Repo(node.get('name'), node2.text)
 
-def get_binarylist(apiurl, prj, repo, arch, package=None, verbose=False):
+def get_binarylist(apiurl, prj, repo, arch, package=None, verbose=False, withccache=False):
     what = package or '_repository'
-    u = makeurl(apiurl, ['build', prj, repo, arch, what])
+    query = {}
+    if withccache:
+        query['withccache'] = 1
+    u = makeurl(apiurl, ['build', prj, repo, arch, what], query=query)
     f = http_GET(u)
     tree = ET.parse(f)
     if not verbose:
@@ -5686,7 +5720,7 @@ def get_binarylist_published(apiurl, prj, repo, arch):
     return r
 
 
-def show_results_meta(apiurl, prj, package=None, lastbuild=None, repository=[], arch=[], oldstate=None, multibuild=False, locallink=False):
+def show_results_meta(apiurl, prj, package=None, lastbuild=None, repository=[], arch=[], oldstate=None, multibuild=False, locallink=False, code=None):
     query = []
     if package:
         query.append('package=%s' % quote_plus(package))
@@ -5698,6 +5732,8 @@ def show_results_meta(apiurl, prj, package=None, lastbuild=None, repository=[], 
         query.append('multibuild=1')
     if locallink:
         query.append('locallink=1')
+    if code:
+        query.append('code=%s' % quote_plus(code))
     for repo in repository:
         query.append('repository=%s' % quote_plus(repo))
     for a in arch:
@@ -5770,6 +5806,7 @@ def get_results(apiurl, project, package, verbose=False, printJoin='', *args, **
     printed = False
     multibuild_packages = kwargs.pop('multibuild_packages', [])
     show_excluded = kwargs.pop('showexcl', False)
+    code_filter = kwargs.get('code')
     for results in get_package_results(apiurl, project, package, **kwargs):
         r = []
         for res, is_multi in result_xml_to_dicts(results):
@@ -5802,11 +5839,14 @@ def get_results(apiurl, project, package, verbose=False, printJoin='', *args, **
                     res['status'] += '(unpublished)'
                 else:
                     res['status'] += '*'
-
-            if is_multi:
-                r.append(result_line_mb_templ % res)
-            else:
-                r.append(result_line_templ % res)
+            # we need to do the code filtering again, because result_xml_to_dicts returns the code
+            # of the repository if the result is already prefiltered by the backend. So we need
+            # to filter out the repository states.
+            if code_filter is None or code_filter == res['code']:
+                if is_multi:
+                    r.append(result_line_mb_templ % res)
+                else:
+                    r.append(result_line_templ % res)
 
         if printJoin:
             if printed:
@@ -5859,7 +5899,7 @@ def get_package_results(apiurl, project, package=None, wait=False, *args, **kwar
     yield xml
 
 
-def get_prj_results(apiurl, prj, hide_legend=False, csv=False, status_filter=None, name_filter=None, arch=None, repo=None, vertical=None, show_excluded=None):
+def get_prj_results(apiurl, prj, hide_legend=False, csv=False, status_filter=None, name_filter=None, arch=None, repo=None, vertical=None, show_excluded=None, brief=False):
     #print '----------------------------------------'
     global buildstatus_symbols
 
@@ -5899,8 +5939,8 @@ def get_prj_results(apiurl, prj, hide_legend=False, csv=False, status_filter=Non
     targets.sort()
 
     # filter option
+    filters = []
     if status_filter or name_filter or not show_excluded:
-
         pacs_to_show = []
         targets_to_show = []
 
@@ -5910,20 +5950,20 @@ def get_prj_results(apiurl, prj, hide_legend=False, csv=False, status_filter=Non
                 # a list is needed because if status_filter == "U"
                 # we have to filter either an "expansion error" (obsolete)
                 # or an "unresolvable" state
-                filters = []
                 for txt, sym in buildstatus_symbols.items():
                     if sym == status_filter:
                         filters.append(txt)
-                for filt_txt in filters:
-                    for pkg in status.keys():
-                        for repo in status[pkg].keys():
-                            if status[pkg][repo] == filt_txt:
-                                if not name_filter:
-                                    pacs_to_show.append(pkg)
-                                    targets_to_show.append(repo)
-                                elif name_filter in pkg:
-                                    pacs_to_show.append(pkg)
-
+            else:
+                filters.append(status_filter)
+            for filt_txt in filters:
+                for pkg in status.keys():
+                    for repo in status[pkg].keys():
+                        if status[pkg][repo] == filt_txt:
+                            if not name_filter:
+                                pacs_to_show.append(pkg)
+                                targets_to_show.append(repo)
+                            elif name_filter in pkg:
+                                pacs_to_show.append(pkg)
         #filtering for Package Name
         elif name_filter:
             for pkg in pacs:
@@ -5957,6 +5997,14 @@ def get_prj_results(apiurl, prj, hide_legend=False, csv=False, status_filter=Non
         for pac in pacs:
             row = [pac] + [status[pac][tg] for tg in targets if tg in status[pac]]
             r.append(';'.join(row))
+        return r
+
+    if brief:
+        for pac, repo_states in status.items():
+            for repo, state in repo_states.items():
+                if filters and state not in filters:
+                    continue
+                r.append('%s %s %s %s' % (pac, repo[0], repo[1], state))
         return r
 
     if not vertical:
@@ -6119,6 +6167,8 @@ def print_buildlog(apiurl, prj, package, repository, arch, offset=0, strip_time=
     def print_data(data, strip_time=False):
         if strip_time:
             data = buildlog_strip_time(data)
+        # hmm calling decode_it is a bit problematic because data might begin
+        # or end with an, for instance, incomplete utf-8 sequence
         sys.stdout.write(decode_it(data.translate(all_bytes, remove_bytes)))
 
     # to protect us against control characters
@@ -6656,7 +6706,7 @@ def checkRevision(prj, pac, revision, apiurl=None, meta=False):
     if not apiurl:
         apiurl = conf.config['apiurl']
     try:
-        if int(revision) > int(show_upstream_rev(apiurl, prj, pac, meta)) \
+        if int(revision) > int(show_upstream_rev(apiurl, prj, pac, meta=meta)) \
            or int(revision) <= 0:
             return False
         else:
@@ -6776,12 +6826,21 @@ def search(apiurl, queries=None, **kwargs):
         res[urlpath] = ET.parse(f).getroot()
     return res
 
-def owner(apiurl, binary, mode="binary", attribute=None, project=None, usefilter=None, devel=None, limit=None):
+def owner(apiurl, search_term=None, mode="binary", attribute=None,
+          project=None, usefilter=None, devel=None, limit=None, binary=None):
     """
     Perform a binary package owner search. This is supported since OBS 2.4.
     """
+
+    # binary is just for API backward compatibility
+    if not ((search_term is None) ^ (binary is None)):
+        raise ValueError('Either specify search_term or binary')
+    elif binary is not None:
+        search_term = binary
+ 
     # find default project, if not specified
-    query = { mode: binary }
+    # mode can be "binary" or "package" atm
+    query = { mode: search_term }
     if attribute:
         query['attribute'] = attribute
     if project:
@@ -7155,7 +7214,7 @@ def addDownloadUrlService(url):
     f.close()
 
 
-def addFiles(filenames, prj_obj = None):
+def addFiles(filenames, prj_obj = None, force=False):
     for filename in filenames:
         if not os.path.exists(filename):
             raise oscerr.OscIOError(None, 'file \'%s\' does not exist' % filename)
@@ -7214,7 +7273,7 @@ def addFiles(filenames, prj_obj = None):
         for filename in pac.todo:
             if filename in pac.skipped:
                 continue
-            if filename in pac.excluded:
+            if filename in pac.excluded and not force:
                 print('osc: warning: \'%s\' is excluded from a working copy' % filename, file=sys.stderr)
                 continue
             try:
@@ -7360,6 +7419,13 @@ def request_interactive_review(apiurl, request, initial_cmd='', group=None,
             return True
         except HTTPError as e:
             print('Server returned an error:', e, file=sys.stderr)
+            details = e.hdrs.get('X-Opensuse-Errorcode')
+            if details:
+                print(details, file=sys.stderr)
+            root = ET.fromstring(e.read())
+            summary = root.find('summary')
+            if summary is not None:
+                print(summary.text, file=sys.stderr)
             print('Try -f to force the state change', file=sys.stderr)
         return False
 

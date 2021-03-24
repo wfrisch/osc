@@ -1,6 +1,72 @@
+0.173.0
+  - add showlinked command to show all references of packages linking to a given one
+  - add build --shell-after-build flag. It can also be set via .oscrc.
+  - add build --stage flag. Useful for example for fixing file lists and just
+    running the install section to see the result of it (use --stage=i=).
+    Check the help for more details.
+  - allow to run build script as non-root, by setting su-wrapper empty
+
+0.172.0
+  - support --lastsucceeded/--last-succeeded in "osc buildlog", "osc
+    remotebuildlog" + friends (perform the corresponding operation on
+    the build log of the last successful build)
+  - fix pypi deployment via Travis CI
+  - several fixes in request related code paths (no double html_escape
+    of a request's description etc.)
+  - support local builds in a systemd-nspawn container
+  - fix potential TypeErrors+UnicodeEncodeErrors in the util.cpio and
+    util.ar modules
+  - support local flatpak builds (requires a recent build version)
+  - "osc init <prj>" works for a non-existent (server-side) project <prj>
+  - .old dir support for source services so that some services have access
+    to the results of a previous service run
+
+0.171.0
+  - maintainer search: lookup via package name by default and binary as fallback
+  - fix crash on console resize when downloading files during build
+  - add proper repourls to osc reporuls
+  - new command osc releaserequest: This command is used to transfer sources and
+    binaries without rebuilding them.
+    It requires defined release targets set to trigger="manual".
+  - some improvements on output of help and error messages
+
+0.170
+  - fix code for python3.8 and python3.9
+  - remove dead code
+  - fix tests
+  - don't use chardet to guess encoding. utf-8 or latin-1 is now assumed
+    This will speed up decoding (bsc#1173926)
+  - escape sequences are interpreted correctly on -m
+    osc sr -m "1st line\n2nd line"
+	results in
+    1st line
+    2nd line
+  - add status filter to osc results
+  - add --brief to osc prjresults
+	Gives:
+	build openSUSE_Leap_15.1 x86_64 succeeded
+	build openSUSE_Leap_15.0 x86_64 succeeded
+	build openSUSE_Leap_15.0 armv7l unresolvable
+	build openSUSE_Factory_ARM armv7l succeeded
+	build openSUSE_Factory_ARM aarch64 succeeded
+  - osc prjresults -s <status>: status can now be the long text like "succeeded", "failed"
+  - improve error message if osc service <servicename> is not run in working directory
+  - web links are now also printed for osc mr when print_web_links=1 is set
+
+0.169.1
+  - add --ccache option to osc getbinaries
+
 0.169.0
   - improve speed and usability of osc bash completion
-
+  - switch packagequery.py to return only bytes
+  - improved some error messages
+  - osc add: support git@ (private github) or git:// URLs correctly
+  - split dependson and whatdependson commands
+  - support for osc build --shell-cmd
+  - Fix kiwi build with --prefer-pkgs
+  - add pkg-ccache support for osc build
+  - fix security issue (bsc#1122675) do not allow '/' in filename
+ 
 0.168.2
   - Use html.escape instead removed cgi.escape (boo#1166537)
     enables python3.8 compatibility

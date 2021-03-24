@@ -9,11 +9,11 @@ import sys, os
 
 try:
     from urllib.parse import quote_plus
-    from urllib.request import HTTPBasicAuthHandler, HTTPCookieProcessor, HTTPPasswordMgrWithDefaultRealm, HTTPError
+    from urllib.request import HTTPError
 except ImportError:
     #python 2.x
     from urllib import quote_plus
-    from urllib2 import HTTPBasicAuthHandler, HTTPCookieProcessor, HTTPPasswordMgrWithDefaultRealm, HTTPError
+    from urllib2 import HTTPError
 
 from .core import makeurl, streamfile, dgst
 from .grabber import OscFileGrabber, OscMirrorGroup
@@ -43,13 +43,6 @@ class Fetcher:
         self.cpio = {}
         self.enable_cpio = enable_cpio
 
-        passmgr = HTTPPasswordMgrWithDefaultRealm()
-        for host in api_host_options:
-            passmgr.add_password(None, host, api_host_options[host]['user'],
-                                 api_host_options[host]['pass'])
-        openers = (HTTPBasicAuthHandler(passmgr), )
-        if cookiejar:
-            openers += (HTTPCookieProcessor(cookiejar), )
         self.gr = OscFileGrabber(progress_obj=self.progress_obj)
 
     def __add_cpio(self, pac):
@@ -97,8 +90,8 @@ class Fetcher:
                     try:
                         fd, tmpfile = tempfile.mkstemp(prefix='osc_build_file')
                         archive.copyin_file(hdr.filename,
-                                            os.path.dirname(tmpfile),
-                                            os.path.basename(tmpfile))
+                                            decode_it(os.path.dirname(tmpfile)),
+                                            decode_it(os.path.basename(tmpfile)))
                         self.move_package(tmpfile, pac.localdir, pac)
                     finally:
                         os.close(fd)
@@ -179,8 +172,11 @@ class Fetcher:
                     print('Unsupported file type: ', tmpfile, file=sys.stderr)
                     sys.exit(1)
                 canonname = pac_obj.binary
+        decoded_canonname = decode_it(canonname)
+        if b'/' in canonname or '/' in decoded_canonname:
+            raise oscerr.OscIOError(None, 'canonname contains a slash')
 
-        fullfilename = os.path.join(destdir, decode_it(canonname))
+        fullfilename = os.path.join(destdir, decoded_canonname)
         if pac_obj is not None:
             pac_obj.canonname = canonname
             pac_obj.fullfilename = fullfilename

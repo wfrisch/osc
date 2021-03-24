@@ -3,7 +3,7 @@ osc -- opensuse-commander with svn like handling
 
 Patches can be submitted via
  * mail to opensuse-buildservice@opensuse.org
- * Bugzilla: https://bugzilla.novell.com/enter_bug.cgi?product=openSUSE.org&component=BuildService
+ * Bugzilla: https://bugzilla.opensuse.org/enter_bug.cgi?product=openSUSE.org&component=BuildService
  * or the official Git repository on Github:
    https://github.com/openSUSE/osc
 
@@ -22,10 +22,6 @@ To install from git, do
 
 Alternatively, you can directly use osc-wrapper.py from the source dir
 (which is easier if you develop on osc).
-
-
-The program needs the cElementTree python module installed. On SUSE, the
-respective package is called python-elementtree (before 10.2: python-xml).
 
 
 

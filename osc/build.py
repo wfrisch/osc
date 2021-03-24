@@ -28,9 +28,12 @@ import osc.conf
 from . import oscerr
 import subprocess
 try:
+    # Works up to Python 3.8, needed for Python < 3.3 (inc 2.7)
     from xml.etree import cElementTree as ET
 except ImportError:
-    import cElementTree as ET
+    # will import a fast implementation from 3.3 onwards, needed
+    # for 3.9+
+    from xml.etree import ElementTree as ET
 
 from .conf import config, cookiejar
 
@@ -272,9 +275,10 @@ class Pac:
         return "%s" % self.name
 
 
-def get_preinstall_image(apiurl, arch, cache_dir, img_info):
+def get_preinstall_image(apiurl, arch, cache_dir, img_info, offline=False):
     """
-    Searches preinstall image according to build info and downloads it to cache.
+    Searches preinstall image according to build info and downloads it to cache
+    (unless offline is set to True (default: False)).
     Returns preinstall image path, source and list of image binaries, which can
     be used to create rpmlist.
     NOTE: preinstall image can be used only for new build roots!
@@ -301,6 +305,8 @@ def get_preinstall_image(apiurl, arch, cache_dir, img_info):
     imagesource = "%s/%s/%s [%s]" % (img_project, img_repository, img_pkg, img_hdrmd5)
 
     if not os.path.exists(ifile_path):
+        if offline:
+            return '', '', []
         url = "%s/build/%s/%s/%s/%s/%s" % (apiurl, img_project, img_repository, img_arch, img_pkg, img_file)
         print("downloading preinstall image %s" % imagesource)
         if not os.path.exists(cache_path):
@@ -380,6 +386,11 @@ def get_built_files(pacdir, buildtype):
         s_built = ''
     elif buildtype == 'simpleimage':
         b_built = subprocess.Popen(['find', os.path.join(pacdir, 'SIMPLEIMAGE'),
+                                    '-type', 'f'],
+                                   stdout=subprocess.PIPE).stdout.read().strip()
+        s_built = ''
+    elif buildtype == 'flatpak':
+        b_built = subprocess.Popen(['find', os.path.join(pacdir, 'OTHER'),
                                     '-type', 'f'],
                                    stdout=subprocess.PIPE).stdout.read().strip()
         s_built = ''
@@ -501,15 +512,14 @@ def check_trusted_projects(apiurl, projects):
                 print("adding '%s' to oscrc: ['%s']['trusted_prj']" % (prj, apiurl))
                 trusted.append(prj)
             elif r != '2':
-                print("Well, good good bye then :-)")
+                print("Well, goodbye then :-)")
                 raise oscerr.UserAbort()
 
     if tlen != len(trusted):
         config['api_host_options'][apiurl]['trusted_prj'] = trusted
         conf.config_set_option(apiurl, 'trusted_prj', ' '.join(trusted))
 
-def get_kiwipath_from_buildinfo(apiurl, bi_filename, prj, repo):
-    bi = Buildinfo(bi_filename, apiurl, 'kiwi')
+def get_kiwipath_from_buildinfo(bi, prj, repo):
     # If the project does not have a path defined we need to get the config
     # via the repositories in the kiwi file. Unfortunately the buildinfo
     # does not include a hint if this is the case, so we rely on a heuristic
@@ -542,12 +552,13 @@ def run_build(opts, *args):
     cmd += args
 
     sucmd = os.environ.get('OSC_SU_WRAPPER', config['su-wrapper']).split()
-    if sucmd[0] == 'su':
-        if sucmd[-1] == '-c':
-            sucmd.pop()
-        cmd = sucmd + ['-s', cmd[0], 'root', '--'] + cmd[1:]
-    else:
-        cmd = sucmd + cmd
+    if sucmd:
+        if sucmd[0] == 'su':
+            if sucmd[-1] == '-c':
+                sucmd.pop()
+            cmd = sucmd + ['-s', cmd[0], 'root', '--'] + cmd[1:]
+        else:
+            cmd = sucmd + cmd
     if not opts.userootforbuild:
         cmd.append('--norootforbuild')
     return run_external(cmd[0], *cmd[1:])
@@ -561,6 +572,7 @@ def main(apiurl, opts, argv):
     build_root = None
     cache_dir  = None
     build_uid = ''
+    build_shell_after_fail = config['build-shell-after-fail']
     vm_memory = config['build-memory']
     vm_disk_size = config['build-vmdisk-rootsize']
     vm_type = config['build-type']
@@ -582,9 +594,11 @@ def main(apiurl, opts, argv):
         build_type = 'docker'
     if os.path.basename(build_descr) == 'fissile.yml':
         build_type = 'fissile'
-    if build_type not in ['spec', 'dsc', 'kiwi', 'arch', 'collax', 'livebuild', 'simpleimage', 'snapcraft', 'appimage', 'docker', 'podman', 'fissile']:
+    if build_descr.endswith('flatpak.yaml') or build_descr.endswith('flatpak.yml') or build_descr.endswith('flatpak.json'):
+        build_type = 'flatpak'
+    if build_type not in ['spec', 'dsc', 'kiwi', 'arch', 'collax', 'livebuild', 'simpleimage', 'snapcraft', 'appimage', 'docker', 'podman', 'fissile', 'flatpak']:
         raise oscerr.WrongArgs(
-                'Unknown build type: \'%s\'. Build description should end in .spec, .dsc, .kiwi, or .livebuild. Or being named PKGBUILD, build.collax, simpleimage, appimage.yml, snapcraft.yaml or Dockerfile' \
+                'Unknown build type: \'%s\'. Build description should end in .spec, .dsc, .kiwi, or .livebuild. Or being named PKGBUILD, build.collax, simpleimage, appimage.yml, snapcraft.yaml, flatpak.json, flatpak.yml, flatpak.yaml or Dockerfile' \
                         % build_type)
     if not os.path.isfile(build_descr):
         raise oscerr.WrongArgs('Error: build description file named \'%s\' does not exist.' % build_descr)
@@ -622,6 +636,9 @@ def main(apiurl, opts, argv):
     if opts.ccache or config['ccache']:
         buildargs.append('--ccache')
         xp.append('ccache')
+    if opts.pkg_ccache:
+        buildargs.append('--pkg-ccache=%s' % opts.pkg_ccache)
+        xp.append('ccache')
     if opts.linksources:
         buildargs.append('--linksources')
     if opts.baselibs:
@@ -650,6 +667,8 @@ def main(apiurl, opts, argv):
         else:
             print('Error: build-uid arg must be 2 colon separated numerics: "uid:gid" or "caller"', file=sys.stderr)
             return 1
+    if opts.shell_after_fail:
+        build_shell_after_fail = opts.shell_after_fail
     if opts.vm_memory:
         vm_memory = opts.vm_memory
     if opts.vm_disk_size:
@@ -724,6 +743,13 @@ def main(apiurl, opts, argv):
 
     if opts.shell:
         buildargs.append("--shell")
+
+    if build_shell_after_fail:
+        buildargs.append("--shell-after-fail")
+
+    if opts.shell_cmd:
+        buildargs.append("--shell-cmd")
+        buildargs.append(opts.shell_cmd)
 
     if opts.noinit:
         buildargs.append('--noinit')
@@ -862,7 +888,8 @@ def main(apiurl, opts, argv):
             bi_file.flush()
             kiwipath = None
             if build_type == 'kiwi':
-                kiwipath = get_kiwipath_from_buildinfo(apiurl, bi_filename, prj, repo)
+                bi = Buildinfo(bi_filename, apiurl, 'kiwi', list(prefer_pkgs.keys()))
+                kiwipath = get_kiwipath_from_buildinfo(bi, prj, repo)
                 bc = get_buildconfig(apiurl, prj, repo, kiwipath)
                 bc_file.seek(0)
                 bc_file.write(decode_it(bc))
@@ -910,7 +937,12 @@ def main(apiurl, opts, argv):
         bi.release = opts.release
 
     if bi.release:
-        buildargs.append('--release=%s' % bi.release)
+        buildargs.append('--release')
+        buildargs.append(bi.release)
+
+    if opts.stage:
+        buildargs.append('--stage')
+        buildargs.append(opts.stage)
 
     if opts.build_opt:
         buildargs += opts.build_opt
@@ -977,10 +1009,11 @@ def main(apiurl, opts, argv):
     imagebins = []
     if (not config['no_preinstallimage'] and not opts.nopreinstallimage and
         bi.preinstallimage and
-        not opts.noinit and not opts.offline and
+        not opts.noinit and
         (opts.clean or (not os.path.exists(build_root + "/installed-pkg") and
                         not os.path.exists(build_root + "/.build/init_buildsystem.data")))):
-        (imagefile, imagesource, imagebins) = get_preinstall_image(apiurl, arch, cache_dir, bi.preinstallimage)
+        (imagefile, imagesource, imagebins) = get_preinstall_image(apiurl, arch, cache_dir, bi.preinstallimage,
+                                                                   opts.offline)
         if imagefile:
             # remove binaries from build deps which are included in preinstall image
             for i in bi.deps:
@@ -1187,7 +1220,7 @@ def main(apiurl, opts, argv):
                        buildargs.append('--kiwi-parameter')
                        buildargs.append('--add-repopriority='+xml.get('priority'))
 
-    if vm_type == "xen" or vm_type == "kvm" or vm_type == "lxc":
+    if vm_type == "xen" or vm_type == "kvm" or vm_type == "lxc" or vm_type == "nspawn":
         print('Skipping verification of package signatures due to secure VM build')
     elif bi.pacsuffix == 'rpm':
         if opts.no_verify:
@@ -1270,7 +1303,7 @@ def main(apiurl, opts, argv):
             vm_options += [ '--vm-telnet=' + vm_telnet ]
         if vm_memory:
             vm_options += [ '--memory=' + vm_memory ]
-        if vm_type != 'lxc':
+        if vm_type != 'lxc' and vm_type != 'nspawn':
             vm_options += [ '--vm-disk=' + my_build_device ]
             vm_options += [ '--vm-swap=' + my_build_swap ]
             vm_options += [ '--logfile=%s/.build.log' % build_root ]
@@ -1309,12 +1342,13 @@ def main(apiurl, opts, argv):
 
     if need_root:
         sucmd = config['su-wrapper'].split()
-        if sucmd[0] == 'su':
-            if sucmd[-1] == '-c':
-                sucmd.pop()
-            cmd = sucmd + ['-s', cmd[0], 'root', '--' ] + cmd[1:]
-        else:
-            cmd = sucmd + cmd
+        if sucmd:
+            if sucmd[0] == 'su':
+                if sucmd[-1] == '-c':
+                    sucmd.pop()
+                cmd = sucmd + ['-s', cmd[0], 'root', '--' ] + cmd[1:]
+            else:
+                cmd = sucmd + cmd
 
     # change personality, if needed
     if hostarch != bi.buildarch and bi.buildarch in change_personality:
