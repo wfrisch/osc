@@ -25,6 +25,9 @@ import shlex
 import hashlib
 import platform
 
+import urllib3
+import urllib3.contrib.pyopenssl
+urllib3.contrib.pyopenssl.inject_into_urllib3()
 
 try:
     import distro
@@ -3337,15 +3340,14 @@ def makeurl(baseurl, l, query=[]):
     return urlunsplit((scheme, netloc, '/'.join([path] + list(l)), query, ''))
 
 
+pool_manager = urllib3.poolmanager.PoolManager(num_pools=5, ca_certs="/var/lib/ca-certificates/ca-bundle.pem", cert_reqs="REQUIRED")
+#if conf.config['debug']:
+    #import logging
+    #logging.getLogger("urllib3").setLevel(logging.DEBUG)
+    #logging.basicConfig(level=logging.DEBUG)
+
 def http_request(method, url, headers={}, data=None, file=None):
-    """wrapper around urllib2.urlopen for error handling,
-    and to support additional (PUT, DELETE) methods"""
     def create_memoryview(obj):
-        if sys.version_info < (2, 7, 99):
-            # obj might be a mmap and python 2.7's mmap does not
-            # behave like a bytearray (a bytearray in turn can be used
-            # to create the memoryview). For now simply return a buffer
-            return buffer(obj)
         return memoryview(obj)
 
     filefd = None
@@ -3407,9 +3409,12 @@ def http_request(method, url, headers={}, data=None, file=None):
     try:
         if isinstance(data, str):
             data = bytes(data, "utf-8")
-        fd = urlopen(req, data=data)
 
+        headers = conf._build_request_headers(apiurl)
+        headers.update(req.headers)
+        fd = pool_manager.urlopen(req.get_method(), url, body=data, headers=headers, preload_content=False)
     finally:
+        # TODO: hook up urllib3 with cookiejar
         if hasattr(conf.cookiejar, 'save'):
             conf.cookiejar.save(ignore_discard=True)
 
